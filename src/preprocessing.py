@@ -51,7 +51,7 @@ def train_tokenizer(training_lines: list[str], vocab_size: int = 200_000) -> Tok
     tokenizer = Tokenizer(models.WordLevel(unk_token=UNK_TOKEN))
     tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
 
-    trainer = trainers.WordLevelTrainer(vocab_size=vocab_size, special_tokens=SPECIAL_TOKENS,min_frequency=1)
+    trainer = trainers.WordLevelTrainer(vocab_size=vocab_size, special_tokens=SPECIAL_TOKENS,min_frequency=2)
     tokenizer.train_from_iterator(training_lines, trainer=trainer)
 
     return tokenizer
