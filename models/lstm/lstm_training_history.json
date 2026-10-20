@@ -61,5 +61,12 @@
         "train_perplexity": 188.6445257902787,
         "validation_loss": 5.521816958589628,
         "validation_perplexity": 250.08902602935117
+    },
+    {
+        "epoch": 10,
+        "train_loss": 5.197185150558726,
+        "train_perplexity": 180.76270527723187,
+        "validation_loss": 5.526161957016522,
+        "validation_perplexity": 251.1780265936308
     }
 ]
