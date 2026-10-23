@@ -1,0 +1,16 @@
+{
+  "validation": {
+    "perplexity": 205.97236234593996,
+    "top1_accuracy": 0.21314698775231422,
+    "top5_accuracy": 0.4009810567056985,
+    "unk_rate": 0.053766465555706446,
+    "number_of_predictions": 206188
+  },
+  "test": {
+    "perplexity": 202.30994528032744,
+    "top1_accuracy": 0.21500578569775514,
+    "top5_accuracy": 0.4040592455450127,
+    "unk_rate": 0.05959537198629694,
+    "number_of_predictions": 232065
+  }
+}

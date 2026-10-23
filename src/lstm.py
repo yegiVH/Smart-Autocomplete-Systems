@@ -3,13 +3,11 @@ import json
 import pickle
 import random
 import math
-import copy
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from tokenizers import Tokenizer
 import matplotlib.pyplot as plt
-import pandas as pd
+
 
 def make_lstm_dataset(sequences, block_size, pad_id):
     input_blocks = []
@@ -106,10 +104,6 @@ def run_epoch(model, data_loader, criterion, optimizer=None): # it is like if th
         "loss": average_loss,
         "perplexity": perplexity
     }
-
-
-def create_tuning_model():
-    return LSTMLanguageModel(vocab_size=vocab_size, embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT, pad_id=pad_id).to(device)
 
 
 def evaluate_lstm_model(model, sequences, top_k=5):
@@ -250,42 +244,28 @@ def show_test_examples(sequences, model, number_of_examples=8, seed=42):
         print("Correct word in top 5:", correct_top5)
 
 
+
 def main():
-    
-    global BATCH_SIZE, BLOCK_SIZE, DROPOUT, EMBEDDING_DIM, EPOCHS, HIDDEN_DIM, LEARNING_RATE, MODEL_DIR, NUM_LAYERS, PROCESSED_DIR, PROJECT_DIR, SEED, TUNING_EPOCHS, best_epoch, best_lr, best_model_path, best_model_state, best_ppl, best_tuned_path, best_val_perplexity, best_validation_perplexity, bos_id, checkpoint, checkpoint_path, criterion, current_history, device, encoded_lines, eos_id, epoch, epoch_results, epochs, f, hf_tokenizer, history, history_path, id_to_word, idx, initial_weights, item, learning_rates, lr, metric, model, number_of_parameters, optimizer, pad_id, parameter, reference_model, results, sequences, split, test, test_dataset, test_loader, test_results, test_str, train_dataset, train_loader, train_losses, train_perplexities, train_results, tuned_model, tuning_df, tuning_history, tuning_model, tuning_optimizer, tuning_results, unk_id, val, val_losses, val_perplexities, val_str, validation_dataset, validation_loader, validation_results, vocab_data, vocab_size, word, word_to_id, x_example, y_example
 
+    global device, pad_id, vocab_size, bos_id, eos_id, unk_id, BLOCK_SIZE, id_to_word
 
-    # %% [markdown] Cell 0
-    # ## Imports
-
-    # %% Cell 1
-
-
-    # %% [markdown] Cell 2
-    # ### load preprocessing files
-
-    # %% Cell 3
+  ### load preprocessing files
 
     PROJECT_DIR = Path(__file__).resolve().parent.parent
-
     DATA_DIR = PROJECT_DIR/"data"
     PROCESSED_DIR = DATA_DIR/"processed"
 
     # Model directory
     MODEL_DIR = PROJECT_DIR/"models"/"lstm"
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-    hf_tokenizer = Tokenizer.from_file(str(PROCESSED_DIR/"tokenizer.json"))
-
+    
     with open(PROCESSED_DIR/"encoded_lines.pkl", "rb") as f:
         encoded_lines = pickle.load(f)
-
     with open(PROCESSED_DIR/"vocab.json", "r", encoding="utf-8") as f:
         vocab_data = json.load(f)
 
     word_to_id = vocab_data["word_to_id"]
     id_to_word = {int(idx): word for word, idx in word_to_id.items()}
-
     vocab_size = len(word_to_id)
 
     bos_id = word_to_id["<bos>"]
@@ -298,16 +278,8 @@ def main():
     for split, sequences in encoded_lines.items():
         print(split, "sequences:", len(sequences))
 
-    # %% [markdown] Cell 4
-    # ---
 
-    # %% [markdown] Cell 5
-    # ## Training
-
-    # %% [markdown] Cell 6
-    # ### settings
-
-    # %% Cell 7
+    ## -Training
     # reproducibility
     SEED = 42
     random.seed(SEED)
@@ -327,72 +299,28 @@ def main():
     BATCH_SIZE = 4
 
     # training settings
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0005
     EPOCHS = 10
 
-    print("Block size:", BLOCK_SIZE)
-    print("Batch size:", BATCH_SIZE)
+    ### Making the dataset ready
 
-    # %% [markdown] Cell 8
-    # block size means the LSTM processes up to 32 input tokens in each training example.   
-    # and cuz batch size is 4, it processes four examples at once.
-
-    # %% [markdown] Cell 9
-    # ### Making the dataset ready
-
-    # %% Cell 10
-
-    # %% Cell 11
     # for each split
     train_dataset = make_lstm_dataset(encoded_lines["train"], BLOCK_SIZE, pad_id)
     validation_dataset = make_lstm_dataset(encoded_lines["validation"], BLOCK_SIZE, pad_id)
-    test_dataset = make_lstm_dataset(encoded_lines["test"], BLOCK_SIZE, pad_id)
-
-    print("Training blocks:", len(train_dataset))
-    print("Validation blocks:", len(validation_dataset))
-    print("Test blocks:", len(test_dataset))
 
     # we only shuffle training blocks
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     validation_loader = DataLoader(validation_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    # one example
-    x_example, y_example = train_dataset[0]
+    ### - Defining the lstm
 
-    print("\nInput ids:", x_example[:10].tolist())
-    print("Target ids:", y_example[:10].tolist())
-
-    # %% [markdown] Cell 12
-    # ### Defining the lstm
-
-    # %% Cell 13
-
-    # %% [markdown] Cell 14
-    # ### Initialize the model and loss function
-
-    # %% Cell 15
+    ### Initialize the model and loss function
     model = LSTMLanguageModel(vocab_size=vocab_size, embedding_dim=EMBEDDING_DIM, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT, pad_id=pad_id).to(device)
-
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id, reduction="sum") # ignoring padded targets when calculating loss
     optimizer = torch.optim.Adam(model.parameters(), lr= LEARNING_RATE)
 
-    number_of_parameters = sum(parameter.numel() for parameter in model.parameters())
 
-    print(f"Model parameters: {number_of_parameters:,}")
-
-    # %% [markdown] Cell 16
-    # ---
-
-    # %% [markdown] Cell 17
-    # ## Training 
-
-    # %% Cell 18
-
-    # %% [markdown] Cell 19
-    # ### training on data and monitoring
-
-    # %% Cell 20
+    ### training on data and monitoring
     best_validation_perplexity = float("inf") # pos infinity
     best_model_path = MODEL_DIR / "lstm_best.pt" # where we should save the best model
     history = []
@@ -416,18 +344,16 @@ def main():
 
         history.append(epoch_results)
 
-        ## printing everything
+        # printing everything
         print(f"\nEpoch {epoch}/{EPOCHS}")
         print(f"Train loss: {train_results['loss']:.4f}")
         print(f"Validation loss: {validation_results['loss']:.4f}")
         print(f"Train perplexity: {train_results['perplexity']:.4f}")
-        print(f"Validation perplexity: "
-              f"{validation_results['perplexity']:.4f}")
+        print(f"Validation perplexity: " f"{validation_results['perplexity']:.4f}")
 
         # we only save the model if it is the best so far
         if validation_results["perplexity"] < best_validation_perplexity:
             best_validation_perplexity = validation_results["perplexity"]
-
             torch.save(
                 {
                     "epoch": epoch,
@@ -442,11 +368,10 @@ def main():
                     "pad_id": pad_id
                 }, best_model_path
             )
-
             print("-- New best checkpoint saved!")
 
         # then saving the history
-        history_path = MODEL_DIR / "lstm_training_history.json"
+        history_path = MODEL_DIR/"lstm_training_history.json"
 
         with open(history_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=4)
@@ -455,10 +380,7 @@ def main():
     print("Best validation perplexity:", best_validation_perplexity)
     print("Best checkpoint:", best_model_path)
 
-    # %% [markdown] Cell 21
-    # ### Plotting
-
-    # %% Cell 22
+    ## Plotting
     epochs = [item["epoch"] for item in history]
     train_losses = [item["train_loss"] for item in history]
     val_losses = [item["validation_loss"] for item in history]
@@ -489,200 +411,16 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    # %% [markdown] Cell 23
-    # the LSTM model's training loss and perplexity decrease consistently over 10 epochs, indicating that the model is learning patterns from the training data.   
-    # Validation loss and perplexity also decrease initially, with validation perplexity dropping from approximately 344 to 249 by epoch 7.
-    # However, after epoch 7, validation performance stabilizes and slightly worsens, while training performance continues to improve. This suggests mild overfitting, as the model becomes better at predicting training data without achieving further improvements on unseen data.
+    ## Evaluation
+    ### top 1 and top 5 accuracy
 
-    # %% [markdown] Cell 24
-    # ### Hyperparameter Tuning
-
-    # %% Cell 25
-    learning_rates = [0.0003, 0.0005, 0.001]
-    TUNING_EPOCHS = 10
-    tuning_results = []
-    tuning_history = {}
-
-    # just a function to create a fresh lstm model
-
-    # to use identical initial weights for each learning rate
-    torch.manual_seed(42)
-
-    reference_model = create_tuning_model()
-    initial_weights = copy.deepcopy(reference_model.state_dict())
-
-    ## testing different learning rates
-    for lr in learning_rates:
-
-        print("\n" + "~" * 50)
-        print(f"Testing learning rate: {lr}")
-        print("~" * 50)
-
-        tuning_model = create_tuning_model()
-        tuning_model.load_state_dict(initial_weights)
-        tuning_optimizer = torch.optim.Adam(tuning_model.parameters(), lr=lr)
-
-        best_val_perplexity = float("inf")
-        best_epoch = 0
-        best_model_state = None
-
-        current_history = []
-
-        for epoch in range(1, TUNING_EPOCHS+1):
-
-            train_results = run_epoch(tuning_model, train_loader, criterion, optimizer=tuning_optimizer)
-            validation_results = run_epoch(tuning_model, validation_loader, criterion)
-
-            epoch_results = {
-                "epoch": epoch,
-                "train_loss": train_results["loss"],
-                "train_perplexity": train_results["perplexity"],
-                "validation_loss": validation_results["loss"],
-                "validation_perplexity": validation_results["perplexity"]
-            }
-
-            current_history.append(epoch_results)
-
-            print(f"\nEpoch {epoch}/{TUNING_EPOCHS}")
-            print(f"Train loss: {train_results['loss']:.4f}")
-            print(f"Validation loss: {validation_results['loss']:.4f}")
-            print(f"Train perplexity: {train_results['perplexity']:.4f}")
-            print(f"Validation perplexity: "
-                 f"{validation_results['perplexity']:.4f}")
-
-            if validation_results["perplexity"] < best_val_perplexity:
-                best_val_perplexity = validation_results["perplexity"]
-                best_epoch = epoch
-                best_model_state = copy.deepcopy(tuning_model.state_dict())
-
-        checkpoint_path = MODEL_DIR/f"lstm_tuning_lr_{lr}.pt"
-
-        torch.save(
-            {
-                "model_state_dict": best_model_state,
-                "learning_rate": lr,
-                "best_epoch": best_epoch,
-                "best_validation_perplexity": best_val_perplexity,
-                "embedding_dim": EMBEDDING_DIM,
-                "hidden_dim": HIDDEN_DIM,
-                "num_layers": NUM_LAYERS,
-                "dropout": DROPOUT,
-                "vocab_size": vocab_size,
-                "pad_id": pad_id
-            }, checkpoint_path
-        )
-
-        tuning_results.append({
-            "learning_rate": lr,
-            "best_epoch": best_epoch,
-            "best_validation_perplexity": best_val_perplexity
-        })
-
-        tuning_history[str(lr)] = current_history
-        print(f"\nBest epoch: {best_epoch}")
-        print(f"Best validation perplexity: {best_val_perplexity:.4f}")
-        print(f"Checkpoint saved: {checkpoint_path}")
-
-    # compare hyperparameter tuning results
-    tuning_df = pd.DataFrame(tuning_results)
-    tuning_df = tuning_df.sort_values(by="best_validation_perplexity").reset_index(drop=True)
-
-    print("\n" + "-" * 50)
-    print("Hyperparameter Tuning Results")
-    print("-" * 50)
-
-    print(tuning_df.to_string(index=False))
-
-    # best learning rate
-    best_lr = float(tuning_df.iloc[0]["learning_rate"])
-    best_ppl = float(tuning_df.iloc[0]["best_validation_perplexity"])
-
-    print(f"\nBest learning rate: {best_lr}")
-    print(f"Best validation perplexity: {best_ppl:.4f}")
-
-    tuning_df.to_csv(MODEL_DIR/"lstm_tuning_results.csv", index=False)
-
-    with open(MODEL_DIR/"lstm_tuning_history.json", "w", encoding="utf-8") as f:
-        json.dump(tuning_history, f, indent=4)
-
-    ## plotting
-    plt.figure(figsize=(8, 5))
-
-    for lr in learning_rates:
-        results = tuning_history[str(lr)]
-        epochs = [item["epoch"] for item in results]
-        val_perplexities = [ item["validation_perplexity"] for item in results]
-
-        plt.plot(epochs, val_perplexities, marker="o", label=f"LR = {lr}")
-
-    plt.xlabel("Epoch")
-    plt.ylabel("Validation Perplexity")
-    plt.title("LSTM Learning Rate Tuning")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(tuning_df["learning_rate"], tuning_df["best_validation_perplexity"], marker="o")
-
-    plt.xscale("log")
-    plt.xlabel("Learning Rate")
-    plt.ylabel("Best Validation Perplexity")
-    plt.title("LSTM Hyperparameter Tuning Results")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    print("\nHyperparameter tuning completed!")
-    print(f"Best learning rate: {best_lr}")
-    print(f"Best validation perplexity: {best_ppl:.4f}")
-
-    # %% [markdown] Cell 26
-    # Learning rate tuning was performed using values of 0.0003, 0.0005, and 0.001 over 10 epochs. All three configurations showed decreasing validation perplexity, indicating improved model performance during training.
-    # The learning rate of 0.0005 achieved the lowest validation perplexity of 244.26 at epoch 10, followed by 0.001 with 247.53 at epoch 8 and 0.0003 with 250.88 at epoch 10.   
-    # Although 0.001 converged faster initially, its validation perplexity began increasing after epoch 8, suggesting mild overfitting. In contrast, 0.0005 showed consistent improvement throughout training.
-
-    # %% [markdown] Cell 27
-    # ### Loading the best tuned lstm model
-
-    # %% Cell 28
-    best_tuned_path = MODEL_DIR/"lstm_tuning_lr_0.0005.pt"
-
-    checkpoint = torch.load(best_tuned_path, map_location=device, weights_only=True)
-
-    # a separate model for the tuned version
-    tuned_model = LSTMLanguageModel(vocab_size=checkpoint["vocab_size"], embedding_dim=checkpoint["embedding_dim"], hidden_dim=checkpoint["hidden_dim"], num_layers=checkpoint["num_layers"], dropout=checkpoint["dropout"], pad_id=checkpoint["pad_id"]).to(device)
-
-    # the best learned weights
-    tuned_model.load_state_dict(checkpoint["model_state_dict"])
-
-    tuned_model.eval()
-
-    print("Tuned LSTM loaded successfully!")
-    print("Learning rate:", checkpoint["learning_rate"])
-    print("Best epoch:", checkpoint["best_epoch"])
-    print("Best validation perplexity:", checkpoint["best_validation_perplexity"])
-
-    # %% [markdown] Cell 29
-    # ## Evaluation
-
-    # %% [markdown] Cell 30
-    # ### top 1 and top 5 accuracy
-
-    # %% [markdown] Cell 31
     # I try to do same evaluation as I did for n-gram to compare them better
-
-    # %% Cell 32
-
-
-    validation_results = evaluate_lstm_model(tuned_model, encoded_lines["validation"], top_k=5)
-    test_results = evaluate_lstm_model(tuned_model, encoded_lines["test"], top_k=5)
-
+    validation_results = evaluate_lstm_model(model, encoded_lines["validation"], top_k=5)
+    test_results = evaluate_lstm_model(model, encoded_lines["test"], top_k=5)
     print("Final LSTM model results:")
     print("=" * 55)
-    print("Learning rate:", checkpoint["learning_rate"])
-    print("Best epoch:", checkpoint["best_epoch"])
+    print("Learning rate:", LEARNING_RATE)
+    print("Evaluated epoch:", EPOCHS)
     print("Vocabulary size:", vocab_size)
     print("\n{:<25} {:>12} {:>12}".format("Metric", "Validation", "Test"))
     print("-" * 55)
@@ -690,36 +428,23 @@ def main():
     for metric in validation_results:
         val = validation_results[metric]
         test = test_results[metric]
-
         if "accuracy" in metric or metric == "unk_rate":
             val_str = f"{val:.2%}"
             test_str = f"{test:.2%}"
-
         elif metric == "number_of_predictions":
             val_str = str(val)
             test_str = str(test)
-
         else:
             val_str = f"{val:.4f}"
             test_str = f"{test:.4f}"
 
         print(f"{metric:<25} {val_str:>12} {test_str:>12}")
 
-    # %% [markdown] Cell 33
-    # The best tuned LSTM model, using a learning rate of 0.0005 and the checkpoint from epoch 10, achieved a validation perplexity of 233.48 and a test perplexity of 224.04. The model also achieved a test Top-1 accuracy of 21.58% and a Top-5 accuracy of 39.64%, indicating that the correct next token appeared among the five highest-ranked suggestions in approximately 40% of eligible test cases.
-    # Compared with the n-gram baseline, the LSTM achieved lower perplexity and higher prediction accuracy, suggesting that it learned useful sequential patterns for next-word prediction. The similar validation and test results also indicate reasonably consistent performance across the two datasets.
 
-    # %% [markdown] Cell 34
-    # ## examples from the test set
-
-    # %% Cell 35
-    # to generate top k next word suggestions
-
-    # %% Cell 36
-
-    print("========== Best Tuned lstm ==========")
-    show_test_examples(encoded_lines["test"], tuned_model, number_of_examples=8, seed=42)
-
+    print("========== Trained LSTM ==========")
+    show_test_examples(encoded_lines["test"], model, number_of_examples=8, seed=42)
 
 if __name__ == "__main__":
+
     main()
+
