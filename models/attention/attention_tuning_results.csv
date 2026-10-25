@@ -1,4 +1,0 @@
-learning_rate,best_epoch,best_validation_perplexity,checkpoint
-0.001,8,215.91504027330717,/home/gusvahaye@GU.GU.SE/Smart-Autocomplete-Systems/models/attention/attention_tuning_lr_0.001.pt
-0.0005,10,217.26729323330127,/home/gusvahaye@GU.GU.SE/Smart-Autocomplete-Systems/models/attention/attention_tuning_lr_0.0005.pt
-0.0003,10,229.54908717351267,/home/gusvahaye@GU.GU.SE/Smart-Autocomplete-Systems/models/attention/attention_tuning_lr_0.0003.pt
