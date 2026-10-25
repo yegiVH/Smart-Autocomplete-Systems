@@ -1,5 +1,3 @@
-# N-gram language model
-
 from pathlib import Path
 import json
 import pickle
@@ -7,9 +5,15 @@ import math
 from collections import Counter, defaultdict
 from tokenizers import Tokenizer
 import re
+import random
+from tokenizers import Tokenizer
+import time
+import sys
+import heapq
+
 
 class NGramLanguageModel:
-    def __init__(self, order=3, alpha=0.0001): 
+    def __init__(self, order=3, alpha=0.0001): # so we use two previous tokens to predict the next token
         self.order = order
         self.alpha = alpha # additive smoothing to prevent zero probabilities
         self.counts = defaultdict(Counter) # counts[context][next_token] = freq
@@ -20,6 +24,7 @@ class NGramLanguageModel:
         
     def fit(self, sequences, vocab_size):
         # first reseting structures to remove old model statistics
+        self._prediction_cache = {}
         self.counts.clear()
         self.context_totals.clear()
         self._top_cache.clear()
@@ -77,23 +82,45 @@ class NGramLanguageModel:
 
         return p / w_sum if w_sum else 1.0 / self.vocab_size # so normalizes when some contexts were skipped
         
-    def predict_next(self, context, top_k=5):
-        context = tuple(context[-(self.order - 1):])
+    def predict_next(self, context, top_k=5, exclude=()):
+        context = tuple(context[-(self.order - 1):]) # so only last two tokens for context
+        excluded = set(exclude)
 
-        results = []
-        for length in range(len(context), -1, -1):
-            suffix = context[-length:] if length else ()
+        # creating a cache if it does not exist
+        if not hasattr(self, "_prediction_cache"):
+            self._prediction_cache = {}
 
-            for token_id in self._top(suffix, top_k):
-                if token_id not in results:
-                    results.append(token_id)
-                    if len(results) == top_k: # to return top k
-                        return results
+        cache_key = (context, top_k, frozenset(excluded), self.alpha, tuple(sorted(self.lambdas.items())))
 
-        return results
+        # returning cached predictions if this context was already evaluated
+        if cache_key in self._prediction_cache:
+            return self._prediction_cache[cache_key]
+
+        candidates = set() # all possible next tokens
+
+        # all tokens seen after the trigram/bigram context
+        for length in range(len(context), 0, -1):
+            candidates.update(self.counts.get(context[-length:], {}).keys())
+
+        # for every other token only the unigram count matters,
+        # so the top unigram tokens are enough (+ extra in case some get excluded)
+        candidates.update(self._top((), top_k + len(excluded)))
+
+        candidates.difference_update(excluded) # removing excluded tokens
+
+        # ranking candidates by interpolated probability
+        ranked = heapq.nlargest(top_k, candidates, key=lambda token_id: self.probability(context, token_id))
+
+        self._prediction_cache[cache_key] = ranked
+
+        return ranked
 
 
-def evaluate_model(model, sequences, unk_id, top_k=5):
+
+def evaluate_model(model, sequences, top_k=5, compute_accuracy=True):
+    # same special-token handling as the LSTM and transformer evaluations
+    special_ids = {bos_id, eos_id, pad_id, unk_id}
+
     # initializing counters
     unk_count = 0
     known_count = 0 # normal vocabulary tokens
@@ -109,10 +136,10 @@ def evaluate_model(model, sequences, unk_id, top_k=5):
             start = max(0, i - (model.order - 1))
             context = sequence[start:i]
 
-            # for counting unknown and known targets
+            # for counting unknown and known targets (known = not a special token)
             if target == unk_id:
                 unk_count += 1
-            else:
+            if target not in special_ids:
                 known_count += 1
 
             probability = model.probability(context, target) # p for all targets
@@ -120,8 +147,8 @@ def evaluate_model(model, sequences, unk_id, top_k=5):
             total_predictions += 1
 
             # accuracy for known ones
-            if target != unk_id:
-                predictions = model.predict_next(context, top_k=top_k)
+            if compute_accuracy and target not in special_ids:
+                predictions = model.predict_next(context, top_k=top_k, exclude=special_ids)
 
                 if predictions and target == predictions[0]:
                     correct_top1 += 1
@@ -130,8 +157,12 @@ def evaluate_model(model, sequences, unk_id, top_k=5):
                     correct_topk += 1
 
     # for only known targets
-    top1_accuracy = (correct_top1 / known_count if known_count else 0.0) 
-    topk_accuracy = (correct_topk / known_count if known_count else 0.0)
+    if compute_accuracy:
+        top1_accuracy = (correct_top1 / known_count if known_count else 0.0)
+        topk_accuracy = (correct_topk / known_count if known_count else 0.0)
+    else:
+        top1_accuracy = None
+        topk_accuracy = None
 
     # and perplexity
     if total_predictions > 0:
@@ -151,6 +182,7 @@ def evaluate_model(model, sequences, unk_id, top_k=5):
     }
 
 
+
 def normalize_for_model(text):
 
     text = re.sub(r'(?<=\w)([.,;:!?)"])(?=\s|$)', r' \1', text) # to add a space before the punctuation
@@ -160,7 +192,7 @@ def normalize_for_model(text):
     return re.sub(r"\s+", " ", text).strip() # to first replace multiple spaces with one and then removing the spaces at the beginning and end
 
 
-def autocomplete(text, model, hf_tokenizer, id_to_word, bos_id, eos_id, pad_id, unk_id, top_k=5):
+def autocomplete(text, model, top_k=5):
 
     normalized_text = normalize_for_model(text)
 
@@ -168,22 +200,62 @@ def autocomplete(text, model, hf_tokenizer, id_to_word, bos_id, eos_id, pad_id, 
 
     special_ids = {bos_id, eos_id, pad_id, unk_id}
 
-    predictions = model.predict_next(prefix_ids, top_k=top_k + 20)
+    predicted_ids = model.predict_next(prefix_ids, top_k=top_k, exclude=special_ids)
 
-    suggestions = []
-    for token_id in predictions:
-        if token_id not in special_ids:
-            suggestions.append(id_to_word[token_id])
+    return [id_to_word[token_id] for token_id in predicted_ids]
 
-        if len(suggestions) == top_k:
-            break
 
-    return suggestions
+def show_test_examples(sequences, model, number_of_examples=8, seed=42):
+
+    rng = random.Random(seed)
+    candidates = [] # to store the locations of valid next word prediction examples
+
+    special_ids = {bos_id, eos_id, pad_id, unk_id}
+
+    for sequence_index, sequence in enumerate(sequences):
+        for target_position in range(3, len(sequence)): # possible target positions, and at least 3 preceding tokens as context
+
+            target_id = sequence[target_position] # token id at the selected position
+            if target_id in special_ids:
+                continue # to skip
+            candidates.append((sequence_index, target_position))
+
+    selected = rng.sample(candidates, k=min(number_of_examples, len(candidates))) # selecting without replacement
+
+    for example_number, (sequence_index, target_position) in enumerate(selected, start=1): # to process each randomly selected example
+        sequence = sequences[sequence_index] # getting the selected sequence
+        prefix_ids = sequence[:target_position]
+        actual_next_id = sequence[target_position]
+
+        # the last 8 prefix tokens
+        visible_prefix_ids = prefix_ids[-8:]
+
+        prefix_text = " ".join(id_to_word[token_id] for token_id in visible_prefix_ids)
+        actual_next_word = id_to_word[actual_next_id]
+
+        # predictions from the model
+        suggestion_ids = model.predict_next(prefix_ids, top_k=5, exclude=special_ids)
+
+        suggestions = [id_to_word[token_id] for token_id in suggestion_ids]
+
+        # Check if the correct token is among top 5
+        correct_top5 = actual_next_id in suggestion_ids
+
+        print(f"\nExample {example_number}")
+        print("Prefix: ", prefix_text)
+        print("Correct word:", actual_next_word)
+        print("Suggestions: ", ", ".join(suggestions))
+        print("Correct word in top 5:", correct_top5)
+
+
 
 
 def main():
+    global hf_tokenizer, encoded_lines, word_to_id, id_to_word, vocab_size, bos_id, eos_id, unk_id, pad_id
 
-    PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+    working_dir = Path.cwd().resolve()
+    PROJECT_DIR = working_dir.parent if working_dir.name == "notebooks" else working_dir
     PROCESSED_DIR = PROJECT_DIR/"data"/"processed"
 
     hf_tokenizer = Tokenizer.from_file(str(PROCESSED_DIR/"tokenizer.json"))
@@ -209,6 +281,8 @@ def main():
     for split_name, sequences in encoded_lines.items():
         print(split_name, "sequences:", len(sequences))
     print()
+    print("Example encoded sequence:")
+    print(encoded_lines["train"][0][:20])
 
 
     # creating the model
@@ -217,7 +291,7 @@ def main():
     # learning the n-gram counts from training
     ngram_model.fit(sequences=encoded_lines["train"], vocab_size=vocab_size)
 
-    # %%
+    ### making predictions
 
     example_sequence = encoded_lines["train"][9]
 
@@ -234,23 +308,14 @@ def main():
     for token_id in predicted_ids:
         print(id_to_word[token_id])
 
-    # %%
 
-    validation_results = evaluate_model(ngram_model, encoded_lines["validation"], unk_id)
-
-    print("Validation results")
-    print("~~~~~~~~~~~~~~~~~~~")
-
-    for metric, value in validation_results.items():
-        print(f"{metric}: {value}")
-
-    # %%
+    # ## Hyperparameter tuning using validatioin perplexity
 
     alpha_values = [0.000001, 0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.01]
 
-    lambda_options = [ {2: 0.6, 1: 0.3, 0: 0.1}, {2: 0.5, 1: 0.3, 0: 0.2}, {2: 0.7, 1: 0.2, 0: 0.1}, {2: 0.4, 1: 0.4, 0: 0.2}]
+    lambda_options = [{2: 0.6, 1: 0.3, 0: 0.1}, {2: 0.5, 1: 0.3, 0: 0.2}, {2: 0.7, 1: 0.2, 0: 0.1}, {2: 0.4, 1: 0.4, 0: 0.2}]
 
-    # best of everything we wanna find 
+    # best of everything we wanna find
     best_perplexity = float("inf")
     best_alpha = None
     best_lambdas = None
@@ -262,15 +327,15 @@ def main():
             ngram_model.alpha = alpha
             ngram_model.lambdas = lambdas.copy()
 
-            results = evaluate_model(ngram_model, encoded_lines["validation"], unk_id)
+            results = evaluate_model(ngram_model, encoded_lines["validation"], compute_accuracy=False)
 
             ppl = results["perplexity"]
 
             validation_scores.append({"alpha": alpha, "lambdas": lambdas.copy(), "perplexity": ppl})
 
-            print(f"alpha ={alpha}, "
-                  f"lambdas ={lambdas}, "
-                  f"perplexity ={ppl:.4f}")
+            print(f"alpha = {alpha}, "
+                  f"lambdas = {lambdas}, "
+                  f"perplexity = {ppl:.4f}")
 
             if ppl < best_perplexity:
                 best_perplexity = ppl
@@ -281,42 +346,19 @@ def main():
     ngram_model.alpha = best_alpha
     ngram_model.lambdas = best_lambdas.copy()
 
-    print("\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    print("\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print("\nBest alpha:", best_alpha)
     print("Best lambdas:", best_lambdas)
     print("Best validation perplexity:", best_perplexity)
 
-    # %%
 
-    test_results = evaluate_model(ngram_model, encoded_lines["test"], unk_id)
+    # ## Final validation and test evaluation
 
-    print("Final n-gram test results")
-    print("~~~~~~~~~~~~~~~~~~~~~~~~~")
+    validation_results = evaluate_model(ngram_model, encoded_lines["validation"], top_k=5)
 
-    for metric, value in test_results.items():
-        if "accuracy" in metric:
-            print(f"{metric}: {value:.4%}") # percentage format
-        elif isinstance(value, float): # if it is float
-            print(f"{metric}: {value:.4f}")
-        else:
-            print(f"{metric}: {value}")
+    test_results = evaluate_model(ngram_model, encoded_lines["test"], top_k=5)
 
-    # %%
-
-    test_prefixes = ["", "The game was", "He went to the", "The city of", "She said.", "The player's"]
-
-    for prefix in test_prefixes:
-        print("Prefix:", repr(prefix))
-        print("Suggestions:", autocomplete(prefix, ngram_model, hf_tokenizer, id_to_word, bos_id, eos_id, pad_id, unk_id))
-        print()
-
-    # %%
-
-    validation_results = evaluate_model(ngram_model, encoded_lines["validation"], unk_id, top_k=5)
-
-    test_results = evaluate_model(ngram_model, encoded_lines["test"], unk_id, top_k=5)
-
-    print("FINAL n-gram model results:")
+    print("Final n-gram model results:")
     print("=" * 55)
 
     print("Model order:", ngram_model.order)
@@ -345,12 +387,131 @@ def main():
 
         print(f"{metric:<25} {val_str:>12} {test_str:>12}")
 
-    # %%
+ 
 
-    for split, sequences in encoded_lines.items():
-        total = sum(len(seq) - 1 for seq in sequences)
-        unknowns = sum(token == unk_id for seq in sequences for token in seq[1:])
-        print(f"{split}: {unknowns / total:.2%} <unk>")
+    ## Autocomplete examples
+
+    test_prefixes = ["", "The game was", "He went to the", "The city of", "She said.", "The player's"]
+
+    for prefix in test_prefixes:
+        print("Prefix:", repr(prefix))
+        print("Suggestions:", autocomplete(prefix, ngram_model))
+        print()
+
+    print("========== Best Tuned N-gram ==========")
+    show_test_examples(encoded_lines["test"], ngram_model, number_of_examples=8,seed=42)
+
+    # ## Frequency-based baseline
+
+    # counting word frequencies from training data
+    special_ids = {bos_id, eos_id, pad_id, unk_id}
+
+    word_counts = Counter(token for sequence in encoded_lines["train"] for token in sequence[1:] if token not in special_ids)
+
+    # finding the five most frequent words
+    top5_words = [token for token, count in word_counts.most_common(5)]
+
+    print("Five most frequent words:")
+    for token in top5_words:
+        print(id_to_word[token], word_counts[token])
+
+
+    # evaluating the frequency baseline
+    def evaluate_frequency_baseline(sequences, top5_words):
+        correct_top1 = 0
+        correct_top5 = 0
+        total = 0
+
+        for sequence in sequences:
+            for target in sequence[1:]:
+
+                # accuracy for known words only
+                if target in special_ids:
+                    continue
+
+                total += 1
+
+                if target == top5_words[0]:
+                    correct_top1 += 1
+
+                if target in top5_words:
+                    correct_top5 += 1
+
+        return {"top1_accuracy": correct_top1 / total,
+                "top5_accuracy": correct_top5 / total
+        }
+
+
+    baseline_validation = evaluate_frequency_baseline(encoded_lines["validation"], top5_words)
+
+    baseline_test = evaluate_frequency_baseline(encoded_lines["test"], top5_words)
+
+    print("\nFrequency baseline results:")
+    print(f"Validation Top-1: {baseline_validation['top1_accuracy']:.2%}")
+    print(f"Validation Top-5: {baseline_validation['top5_accuracy']:.2%}")
+    print(f"Test Top-1: {baseline_test['top1_accuracy']:.2%}")
+    print(f"Test Top-5: {baseline_test['top5_accuracy']:.2%}")
+
+    # ## computational-cost measurements
+
+    # measuring training time
+    start = time.perf_counter()
+
+    ngram_model.fit(sequences=encoded_lines["train"], vocab_size=vocab_size)
+
+    training_time = time.perf_counter() - start
+
+    print(f"Training time: {training_time:.2f} seconds")
+
+    # counting stored n-gram entries
+    num_contexts = len(ngram_model.counts)
+
+    num_ngrams = sum(len(counter) for counter in ngram_model.counts.values())
+
+    print(f"Number of contexts: {num_contexts:,}")
+    print(f"Stored n-gram entries: {num_ngrams:,}")
+
+
+    # collecting 100 test contexts for inference benchmarking
+    contexts = []
+
+    for sequence in encoded_lines["test"]:
+        for i in range(1, len(sequence)):
+            contexts.append(sequence[max(0, i-2):i])
+
+            if len(contexts) == 100:
+                break
+
+        if len(contexts) == 100:
+            break
+
+
+    # measuring autocomplete inference time
+    start = time.perf_counter()
+
+    for context in contexts:
+        ngram_model.predict_next(context, top_k=5, exclude=special_ids)
+
+    inference_time = time.perf_counter() - start
+    predictions_per_second = len(contexts) / inference_time
+
+    print(f"Inference time: {inference_time:.2f} seconds")
+    print(f"Predictions per second: {predictions_per_second:.2f}")
+
+    print("comparison")
+    print("=" * 65)
+
+    print(f"{'Metric':<25} {'Frequency Baseline':>20} {'Trigram':>15}")
+    print("-" * 65)
+
+    print(f"{'Test Top-1':<25} {baseline_test['top1_accuracy']:>19.2%} {test_results['top1_accuracy']:>14.2%}")
+    print(f"{'Test Top-5':<25} {baseline_test['top5_accuracy']:>19.2%} {test_results['top5_accuracy']:>14.2%}")
+    print(f"{'Test Perplexity':<25} {'N/A':>20} {test_results['perplexity']:>15.2f}")
+
+    print("\nComputational cost:")
+    print(f"Training time: {training_time:.2f} seconds")
+    print(f"Stored n-gram entries: {num_ngrams:,}")
+    print(f"Predictions per second: {predictions_per_second:.2f}")
 
 
 if __name__ == "__main__":
